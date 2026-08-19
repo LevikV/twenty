@@ -118,6 +118,9 @@ export const DefaultLayout = () => {
             : {}),
         },
       });
+
+      // Play notification sound
+      new Audio('/notification.mp3').play().catch(() => {});
     });
 
     return () => {
