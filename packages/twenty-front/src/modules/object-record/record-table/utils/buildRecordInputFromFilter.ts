@@ -4,19 +4,26 @@ import { isCompositeFieldType } from '@/object-record/object-filter-dropdown/uti
 import { type RecordFilter } from '@/object-record/record-filter/types/RecordFilter';
 import { buildValueFromFilter } from '@/object-record/record-table/utils/buildValueFromFilter';
 import { type ObjectRecord } from 'twenty-shared/types';
-import { deepMerge, isDefined } from 'twenty-shared/utils';
+import {
+  computeMorphRelationGqlFieldName,
+  computeRelationGqlFieldJoinColumnName,
+  deepMerge,
+  isDefined,
+} from 'twenty-shared/utils';
 
 export const buildRecordInputFromFilter = ({
   currentRecordFilters,
   objectMetadataItem,
   currentWorkspaceMember,
   currentRecordId,
+  currentRecordObjectNameSingular,
   timeZone,
 }: {
   currentRecordFilters: RecordFilter[];
   objectMetadataItem: EnrichedObjectMetadataItem;
   currentWorkspaceMember?: CurrentWorkspaceMember;
   currentRecordId?: string;
+  currentRecordObjectNameSingular?: string;
   timeZone: string;
 }): Partial<ObjectRecord> => {
   const recordInput: Partial<ObjectRecord> = {};
@@ -51,7 +58,49 @@ export const buildRecordInputFromFilter = ({
         return;
       }
 
-      recordInput[`${fieldMetadataItem.name}Id`] = value;
+      recordInput[
+        computeRelationGqlFieldJoinColumnName({ name: fieldMetadataItem.name })
+      ] = value;
+    } else if (fieldMetadataItem.type === 'MORPH_RELATION') {
+      // A morph filter's join column depends on the target object of the
+      // current record (e.g. otnositsyaK -> otnositsyaKTenderId on a tender
+      // page), so resolve the matching morph relation first.
+      const matchingMorphRelation = fieldMetadataItem.morphRelations?.find(
+        (morphRelation) =>
+          morphRelation.targetObjectMetadata.nameSingular ===
+          currentRecordObjectNameSingular,
+      );
+
+      if (!isDefined(matchingMorphRelation)) {
+        return;
+      }
+
+      const value = buildValueFromFilter({
+        filter,
+        options: fieldMetadataItem.options ?? undefined,
+        relationType: matchingMorphRelation.type,
+        currentWorkspaceMember: currentWorkspaceMember ?? undefined,
+        currentRecordId,
+        label: filter.label,
+        timeZone,
+      });
+
+      if (!isDefined(value)) {
+        return;
+      }
+
+      const morphGqlFieldName = computeMorphRelationGqlFieldName({
+        fieldName: fieldMetadataItem.name,
+        relationType: matchingMorphRelation.type,
+        targetObjectMetadataNameSingular:
+          matchingMorphRelation.targetObjectMetadata.nameSingular,
+        targetObjectMetadataNamePlural:
+          matchingMorphRelation.targetObjectMetadata.namePlural,
+      });
+
+      recordInput[
+        computeRelationGqlFieldJoinColumnName({ name: morphGqlFieldName })
+      ] = value;
     } else {
       const value = buildValueFromFilter({
         filter,

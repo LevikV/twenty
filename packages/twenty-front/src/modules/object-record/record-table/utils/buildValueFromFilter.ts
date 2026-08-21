@@ -385,6 +385,22 @@ const VALUE_HANDLER_REGISTRY: Partial<Record<FieldMetadataType, ValueHandler>> =
         label,
         currentRecordId,
       ),
+    [FieldMetadataType.MORPH_RELATION]: ({
+      operand,
+      value,
+      relationType,
+      currentWorkspaceMember,
+      currentRecordId,
+      label,
+    }) =>
+      computeValueFromFilterRelation(
+        operand as RecordFilterToRecordInputOperand<'RELATION'>,
+        value,
+        relationType,
+        currentWorkspaceMember,
+        label,
+        currentRecordId,
+      ),
     [FieldMetadataType.TS_VECTOR]: ({ operand, value }) =>
       computeValueFromFilterTSVector(
         operand as RecordFilterToRecordInputOperand<'TS_VECTOR'>,

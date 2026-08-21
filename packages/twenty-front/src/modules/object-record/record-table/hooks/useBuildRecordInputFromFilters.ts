@@ -34,6 +34,7 @@ export const useBuildRecordInputFromFilters = ({
       objectMetadataItem,
       currentWorkspaceMember: currentWorkspaceMember ?? undefined,
       currentRecordId: currentRecord?.id,
+      currentRecordObjectNameSingular: currentRecord?.objectMetadataNameSingular,
       timeZone: userTimezone,
     });
   };
