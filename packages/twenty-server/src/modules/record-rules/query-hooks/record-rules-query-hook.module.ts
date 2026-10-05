@@ -3,6 +3,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { TypeORMModule } from 'src/database/typeorm/typeorm.module';
 import { KeyValuePairEntity } from 'src/engine/core-modules/key-value-pair/key-value-pair.entity';
+import { FieldMetadataEntity } from 'src/engine/metadata-modules/field-metadata/field-metadata.entity';
+import { ObjectMetadataEntity } from 'src/engine/metadata-modules/object-metadata/object-metadata.entity';
 import { RoleEntity } from 'src/engine/metadata-modules/role/role.entity';
 import { RoleTargetEntity } from 'src/engine/metadata-modules/role-target/role-target.entity';
 import { provideWorkspaceScopedRepository } from 'src/engine/twenty-orm/workspace-scoped-repository/provide-workspace-scoped-repository';
@@ -22,12 +24,16 @@ import { RecordRulesService } from 'src/modules/record-rules/services/record-rul
       KeyValuePairEntity,
       RoleEntity,
       RoleTargetEntity,
+      ObjectMetadataEntity,
+      FieldMetadataEntity,
     ]),
     TypeORMModule,
   ],
   providers: [
     provideWorkspaceScopedRepository(RoleEntity),
     provideWorkspaceScopedRepository(RoleTargetEntity),
+    provideWorkspaceScopedRepository(ObjectMetadataEntity),
+    provideWorkspaceScopedRepository(FieldMetadataEntity),
     RecordRulesService,
     RecordRuleCheckService,
     RecordWriteRulesPreQueryHook,

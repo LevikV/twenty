@@ -4,12 +4,15 @@ import { isDefined } from 'twenty-shared/utils';
 import { In } from 'typeorm';
 
 import { type UserWorkspaceAuthContext } from 'src/engine/core-modules/auth/types/workspace-auth-context.type';
+import { FieldMetadataEntity } from 'src/engine/metadata-modules/field-metadata/field-metadata.entity';
+import { ObjectMetadataEntity } from 'src/engine/metadata-modules/object-metadata/object-metadata.entity';
 import { RoleEntity } from 'src/engine/metadata-modules/role/role.entity';
 import { RoleTargetEntity } from 'src/engine/metadata-modules/role-target/role-target.entity';
 import { WorkspaceOrmManager } from 'src/engine/twenty-orm/workspace-orm.manager';
 import { InjectWorkspaceScopedRepository } from 'src/engine/twenty-orm/workspace-scoped-repository/inject-workspace-scoped-repository.decorator';
 import { WorkspaceScopedRepository } from 'src/engine/twenty-orm/workspace-scoped-repository/workspace-scoped-repository';
 import { type RecordRule } from 'src/modules/record-rules/types/record-rule.type';
+import { buildRecordRuleMessage } from 'src/modules/record-rules/utils/build-record-rule-message.util';
 
 /**
  * Кто действует: роли пользователя, признак администратора и связанный
@@ -26,6 +29,8 @@ type ActingUser = {
 export type RecordRuleViolation = {
   rule: RecordRule;
   attemptedValue: string;
+  /** Готовый текст для пользователя (шаблон правила + подпись значения). */
+  message: string;
 };
 
 @Injectable()
@@ -47,6 +52,10 @@ export class RecordRuleCheckService {
     private readonly roleRepository: WorkspaceScopedRepository<RoleEntity>,
     @InjectWorkspaceScopedRepository(RoleTargetEntity)
     private readonly roleTargetRepository: WorkspaceScopedRepository<RoleTargetEntity>,
+    @InjectWorkspaceScopedRepository(ObjectMetadataEntity)
+    private readonly objectMetadataRepository: WorkspaceScopedRepository<ObjectMetadataEntity>,
+    @InjectWorkspaceScopedRepository(FieldMetadataEntity)
+    private readonly fieldMetadataRepository: WorkspaceScopedRepository<FieldMetadataEntity>,
   ) {}
 
   /**
@@ -99,7 +108,12 @@ export class RecordRuleCheckService {
       const attemptedValue = String(rawValue);
 
       if (!rule.allowedValues.includes(attemptedValue)) {
-        return { rule, attemptedValue };
+        return await this.buildViolation(
+          workspaceId,
+          objectName,
+          rule,
+          attemptedValue,
+        );
       }
 
       if (!rule.onlyFromSet) {
@@ -118,11 +132,88 @@ export class RecordRuleCheckService {
       }
 
       if (current.value === null || !rule.allowedValues.includes(current.value)) {
-        return { rule, attemptedValue };
+        return await this.buildViolation(
+          workspaceId,
+          objectName,
+          rule,
+          attemptedValue,
+        );
       }
     }
 
     return null;
+  }
+
+  /** Готовое нарушение с текстом для пользователя. */
+  private async buildViolation(
+    workspaceId: string,
+    objectName: string,
+    rule: RecordRule,
+    attemptedValue: string,
+  ): Promise<RecordRuleViolation> {
+    const valueLabel = await this.resolveValueLabel({
+      workspaceId,
+      objectName,
+      fieldName: rule.fieldName,
+      value: attemptedValue,
+    });
+
+    return {
+      rule,
+      attemptedValue,
+      message: buildRecordRuleMessage(rule.message, valueLabel),
+    };
+  }
+
+  /**
+   * Подпись значения по опциям поля («Выдан», а не `VYDAN`).
+   * Не получилось — возвращаем само значение: текст отказа важнее точности.
+   */
+  private async resolveValueLabel({
+    workspaceId,
+    objectName,
+    fieldName,
+    value,
+  }: {
+    workspaceId: string;
+    objectName: string;
+    fieldName: string;
+    value: string;
+  }): Promise<string> {
+    try {
+      const objectMetadata = await this.objectMetadataRepository.findOne(
+        workspaceId,
+        { where: { nameSingular: objectName } },
+      );
+
+      if (!isDefined(objectMetadata)) {
+        return value;
+      }
+
+      const fieldMetadata = await this.fieldMetadataRepository.findOne(
+        workspaceId,
+        { where: { name: fieldName, objectMetadataId: objectMetadata.id } },
+      );
+
+      if (!isDefined(fieldMetadata) || !Array.isArray(fieldMetadata.options)) {
+        return value;
+      }
+
+      const option = (
+        fieldMetadata.options as { value?: unknown; label?: unknown }[]
+      ).find((fieldOption) => fieldOption?.value === value);
+      const label = option?.label;
+
+      return typeof label === 'string' && label.length > 0 ? label : value;
+    } catch (error) {
+      this.logger.warn(
+        `record-rules: не удалось получить подпись значения «${value}» для ${objectName}.${fieldName}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+
+      return value;
+    }
   }
 
   /** Правило адресовано этому пользователю? Сотрудник важнее роли. */
