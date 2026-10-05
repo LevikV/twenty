@@ -20,10 +20,18 @@ import { buildRecordRuleMessage } from 'src/modules/record-rules/utils/build-rec
  */
 export const RECORD_RULES_ACTING_USER_CACHE_TTL_MS = 15_000;
 
+/** Подпись для массовой правки, когда значение задано фильтром, а не строкой. */
+const BULK_VALUE_LABEL = 'несколько записей';
+
 type ActingUser = {
   roleLabels: string[];
   isAdministrator: boolean;
   sotrudnikId: string | null;
+};
+
+type CheckContext = {
+  workspaceId: string;
+  actingUser: ActingUser;
 };
 
 export type RecordRuleViolation = {
@@ -59,12 +67,10 @@ export class RecordRuleCheckService {
   ) {}
 
   /**
-   * Первое нарушение правил для операции updateOne или null, если всё чисто.
+   * Нарушение при изменении одной записи (updateOne) или null, если чисто.
    *
-   * Логика (решения этапа 0):
-   * - администраторы правило обходят;
-   * - правило действует, только если заполнено «кому» (сотрудник — приоритетно) ;
-   * - проверяем лишь те правила, чьё поле реально меняется;
+   * - правило действует, только если заполнено «кому» (сотрудник важнее роли);
+   * - проверяются лишь правила, чьё поле реально меняется;
    * - политика «разрешено только перечисленное»: новое значение вне списка — отказ;
    * - «только внутри набора»: текущее значение тоже должно быть в списке.
    */
@@ -81,21 +87,18 @@ export class RecordRuleCheckService {
     recordId: string;
     data: Record<string, unknown>;
   }): Promise<RecordRuleViolation | null> {
-    const workspaceId = authContext.workspace.id;
-    const actingUser = await this.getActingUser(
-      workspaceId,
-      authContext.userWorkspaceId,
-      authContext.workspaceMemberId,
-    );
+    const context = await this.getCheckContext(authContext, rules);
 
-    if (actingUser.isAdministrator) {
+    if (!isDefined(context)) {
       return null;
     }
 
-    await this.warnAboutMissingRoles(workspaceId, rules);
-
     for (const rule of rules) {
-      if (!this.ruleTargetsUser(rule, actingUser)) {
+      if (rule.action === 'CREATE') {
+        continue;
+      }
+
+      if (!this.ruleTargetsUser(rule, context.actingUser)) {
         continue;
       }
 
@@ -109,7 +112,7 @@ export class RecordRuleCheckService {
 
       if (!rule.allowedValues.includes(attemptedValue)) {
         return await this.buildViolation(
-          workspaceId,
+          context.workspaceId,
           objectName,
           rule,
           attemptedValue,
@@ -133,7 +136,7 @@ export class RecordRuleCheckService {
 
       if (current.value === null || !rule.allowedValues.includes(current.value)) {
         return await this.buildViolation(
-          workspaceId,
+          context.workspaceId,
           objectName,
           rule,
           attemptedValue,
@@ -144,19 +147,161 @@ export class RecordRuleCheckService {
     return null;
   }
 
+  /**
+   * Нарушение при создании записей (createOne / createMany, в том числе
+   * импорт CSV) или null, если чисто.
+   *
+   * Условие «только внутри набора» к созданию неприменимо: проверяем только
+   * то значение, которое ставят.
+   */
+  async findCreateViolation({
+    authContext,
+    rules,
+    objectName,
+    dataItems,
+  }: {
+    authContext: UserWorkspaceAuthContext;
+    rules: RecordRule[];
+    objectName: string;
+    dataItems: Record<string, unknown>[];
+  }): Promise<RecordRuleViolation | null> {
+    const context = await this.getCheckContext(authContext, rules);
+
+    if (!isDefined(context)) {
+      return null;
+    }
+
+    for (const rule of rules) {
+      if (rule.action === 'UPDATE') {
+        continue;
+      }
+
+      if (!this.ruleTargetsUser(rule, context.actingUser)) {
+        continue;
+      }
+
+      for (const data of dataItems) {
+        const rawValue = data?.[rule.fieldName];
+
+        if (!isDefined(rawValue)) {
+          continue;
+        }
+
+        const attemptedValue = String(rawValue);
+
+        if (!rule.allowedValues.includes(attemptedValue)) {
+          return await this.buildViolation(
+            context.workspaceId,
+            objectName,
+            rule,
+            attemptedValue,
+          );
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Нарушение при массовой правке (updateMany).
+   *
+   * Решение 8 этапа 0: массовое изменение такого поля недоступно вовсе —
+   * значение не разбираем, отказ при самом факте правки поля.
+   */
+  async findBulkUpdateViolation({
+    authContext,
+    rules,
+    objectName,
+    data,
+  }: {
+    authContext: UserWorkspaceAuthContext;
+    rules: RecordRule[];
+    objectName: string;
+    data: Record<string, unknown>;
+  }): Promise<RecordRuleViolation | null> {
+    const context = await this.getCheckContext(authContext, rules);
+
+    if (!isDefined(context)) {
+      return null;
+    }
+
+    for (const rule of rules) {
+      if (rule.action === 'CREATE') {
+        continue;
+      }
+
+      if (!this.ruleTargetsUser(rule, context.actingUser)) {
+        continue;
+      }
+
+      const rawValue = data[rule.fieldName];
+
+      if (!isDefined(rawValue)) {
+        continue;
+      }
+
+      if (typeof rawValue === 'string') {
+        return await this.buildViolation(
+          context.workspaceId,
+          objectName,
+          rule,
+          rawValue,
+        );
+      }
+
+      return await this.buildViolation(
+        context.workspaceId,
+        objectName,
+        rule,
+        BULK_VALUE_LABEL,
+        BULK_VALUE_LABEL,
+      );
+    }
+
+    return null;
+  }
+
+  /**
+   * Общая часть: администраторы правило обходят, отсутствующие роли
+   * предупреждаются в лог. null — проверять нечего.
+   */
+  private async getCheckContext(
+    authContext: UserWorkspaceAuthContext,
+    rules: RecordRule[],
+  ): Promise<CheckContext | null> {
+    const workspaceId = authContext.workspace.id;
+    const actingUser = await this.getActingUser(
+      workspaceId,
+      authContext.userWorkspaceId,
+      authContext.workspaceMemberId,
+    );
+
+    if (actingUser.isAdministrator) {
+      return null;
+    }
+
+    await this.warnAboutMissingRoles(workspaceId, rules);
+
+    return { workspaceId, actingUser };
+  }
+
   /** Готовое нарушение с текстом для пользователя. */
   private async buildViolation(
     workspaceId: string,
     objectName: string,
     rule: RecordRule,
     attemptedValue: string,
+    valueLabelOverride?: string,
   ): Promise<RecordRuleViolation> {
-    const valueLabel = await this.resolveValueLabel({
-      workspaceId,
-      objectName,
-      fieldName: rule.fieldName,
-      value: attemptedValue,
-    });
+    const valueLabel =
+      valueLabelOverride ??
+      (await this.resolveValueLabel({
+        workspaceId,
+        objectName,
+        fieldName: rule.fieldName,
+        value: attemptedValue,
+      }));
 
     return {
       rule,

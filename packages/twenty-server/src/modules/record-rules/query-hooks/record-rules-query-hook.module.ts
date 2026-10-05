@@ -8,6 +8,9 @@ import { ObjectMetadataEntity } from 'src/engine/metadata-modules/object-metadat
 import { RoleEntity } from 'src/engine/metadata-modules/role/role.entity';
 import { RoleTargetEntity } from 'src/engine/metadata-modules/role-target/role-target.entity';
 import { provideWorkspaceScopedRepository } from 'src/engine/twenty-orm/workspace-scoped-repository/provide-workspace-scoped-repository';
+import { RecordCreateManyRulesPreQueryHook } from 'src/modules/record-rules/query-hooks/record-create-many-rules.pre-query.hook';
+import { RecordCreateRulesPreQueryHook } from 'src/modules/record-rules/query-hooks/record-create-one-rules.pre-query.hook';
+import { RecordUpdateManyRulesPreQueryHook } from 'src/modules/record-rules/query-hooks/record-update-many-rules.pre-query.hook';
 import { RecordWriteRulesPreQueryHook } from 'src/modules/record-rules/query-hooks/record-write-rules.pre-query.hook';
 import { RecordRuleCheckService } from 'src/modules/record-rules/services/record-rule-check.service';
 import { RecordRulesService } from 'src/modules/record-rules/services/record-rules.service';
@@ -37,6 +40,9 @@ import { RecordRulesService } from 'src/modules/record-rules/services/record-rul
     RecordRulesService,
     RecordRuleCheckService,
     RecordWriteRulesPreQueryHook,
+    RecordCreateRulesPreQueryHook,
+    RecordCreateManyRulesPreQueryHook,
+    RecordUpdateManyRulesPreQueryHook,
   ],
   exports: [RecordRulesService, RecordRuleCheckService],
 })
