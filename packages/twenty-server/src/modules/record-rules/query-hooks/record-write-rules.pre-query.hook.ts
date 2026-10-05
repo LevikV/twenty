@@ -2,6 +2,7 @@ import { type WorkspacePreQueryHookInstance } from 'src/engine/api/graphql/works
 import { WorkspaceQueryHook } from 'src/engine/api/graphql/workspace-query-runner/workspace-query-hook/decorators/workspace-query-hook.decorator';
 import { type UpdateOneResolverArgs } from 'src/engine/api/graphql/workspace-resolver-builder/interfaces/workspace-resolvers-builder.interface';
 import { type WorkspaceAuthContext } from 'src/engine/core-modules/auth/types/workspace-auth-context.type';
+import { RecordRulesService } from 'src/modules/record-rules/services/record-rules.service';
 
 /**
  * Проверка правил ДО записи: универсальный перехватчик изменения записи.
@@ -16,19 +17,40 @@ import { type WorkspaceAuthContext } from 'src/engine/core-modules/auth/types/wo
  * Остальные пути записи (updateMany, createOne, createMany) добавляются
  * отдельными тонкими классами — этап 1.5.
  *
- * Этап 1.1 — только каркас: быстрый выход, поведение системы не меняется.
- * Чтение правил и проверка значения — этапы 1.2–1.4.
+ * Этапы: 1.1 — каркас, 1.2 — чтение правил из kv и кэш.
+ * Проверка значения — этап 1.3.
  */
 @WorkspaceQueryHook('*.updateOne')
 export class RecordWriteRulesPreQueryHook
   implements WorkspacePreQueryHookInstance
 {
+  constructor(private readonly recordRulesService: RecordRulesService) {}
+
   async execute(
-    _authContext: WorkspaceAuthContext,
-    _objectName: string,
+    authContext: WorkspaceAuthContext,
+    objectName: string,
     payload: UpdateOneResolverArgs,
   ): Promise<UpdateOneResolverArgs> {
-    // Быстрый выход: пока правил нет — пропускаем запись без изменений.
+    // Решение этапа 0: правило действует только на изменения от пользователей.
+    // Изменения приложений, API-ключей и системных процессов пропускаем.
+    if (authContext.type !== 'user') {
+      return payload;
+    }
+
+    const workspaceId = authContext.workspace.id;
+
+    // Быстрый выход: нет активных правил по этому объекту — нулевая цена
+    // для всех остальных записей в системе.
+    const rules = await this.recordRulesService.getRulesForObject(
+      workspaceId,
+      objectName,
+    );
+
+    if (rules.length === 0) {
+      return payload;
+    }
+
+    // Этап 1.3 — проверка значения по правилу. Пока ничего не меняем.
     return payload;
   }
 }
