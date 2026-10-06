@@ -124,6 +124,7 @@ export class RecordRuleCheckService {
       }
 
       const current = await this.readFieldValue({
+        authContext,
         objectName,
         recordId,
         fieldName: rule.fieldName,
@@ -272,7 +273,7 @@ export class RecordRuleCheckService {
   ): Promise<CheckContext | null> {
     const workspaceId = authContext.workspace.id;
     const actingUser = await this.getActingUser(
-      workspaceId,
+      authContext,
       authContext.userWorkspaceId,
       authContext.workspaceMemberId,
     );
@@ -379,10 +380,11 @@ export class RecordRuleCheckService {
   }
 
   private async getActingUser(
-    workspaceId: string,
+    authContext: UserWorkspaceAuthContext,
     userWorkspaceId: string,
     workspaceMemberId: string,
   ): Promise<ActingUser> {
+    const workspaceId = authContext.workspace.id;
     const cacheKey = `${workspaceId}:${userWorkspaceId}:${workspaceMemberId}`;
     const cached = this.actingUserCache.get(cacheKey);
 
@@ -401,7 +403,7 @@ export class RecordRuleCheckService {
     const user: ActingUser = {
       roleLabels: roles.map((role) => role.label),
       isAdministrator: roles.some((role) => role.canUpdateAllSettings),
-      sotrudnikId: await this.readSotrudnikId(workspaceId, workspaceMemberId),
+      sotrudnikId: await this.readSotrudnikId(authContext, workspaceMemberId),
     };
 
     this.actingUserCache.set(cacheKey, {
@@ -412,25 +414,37 @@ export class RecordRuleCheckService {
     return user;
   }
 
-  /** Сотрудник, привязанный к участнику воркспейса (правило может быть на него). */
+  /**
+   * Сотрудник, привязанный к участнику воркспейса (правило может быть на него).
+   *
+   * ⚠️ Внутри pre-query хука нет контекста воркспейса: без
+   * `executeInWorkspaceContext` чтение падает с «Workspace context not set»
+   * (проверено на живом прогоне 06.10.2026 — правило не срабатывало).
+   * Так же это делает ядро в `TaskPostQueryHookService`.
+   */
   private async readSotrudnikId(
-    workspaceId: string,
+    authContext: UserWorkspaceAuthContext,
     workspaceMemberId: string,
   ): Promise<string | null> {
     try {
-      const repository = this.workspaceOrmManager.getRepository(
-        'workspaceMember',
-        { shouldBypassPermissionChecks: true },
-        { useReplica: true },
-      );
-      const member = (await repository.findOne({
-        where: { id: workspaceMemberId },
-      })) as { sotrudnikId?: string | null } | null;
+      return await this.workspaceOrmManager.executeInWorkspaceContext(
+        async () => {
+          const repository = this.workspaceOrmManager.getRepository(
+            'workspaceMember',
+            { shouldBypassPermissionChecks: true },
+            { useReplica: true },
+          );
+          const member = (await repository.findOne({
+            where: { id: workspaceMemberId },
+          })) as { sotrudnikId?: string | null } | null;
 
-      return member?.sotrudnikId ?? null;
+          return member?.sotrudnikId ?? null;
+        },
+        authContext,
+      );
     } catch (error) {
       this.logger.warn(
-        `record-rules: не удалось прочитать участника ${workspaceMemberId} воркспейса ${workspaceId}: ${
+        `record-rules: не удалось прочитать участника ${workspaceMemberId} воркспейса ${authContext.workspace.id}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -440,34 +454,41 @@ export class RecordRuleCheckService {
   }
 
   private async readFieldValue({
+    authContext,
     objectName,
     recordId,
     fieldName,
   }: {
+    authContext: UserWorkspaceAuthContext;
     objectName: string;
     recordId: string;
     fieldName: string;
   }): Promise<{ isReadable: boolean; value: string | null }> {
     try {
-      const repository = this.workspaceOrmManager.getRepository(
-        objectName,
-        { shouldBypassPermissionChecks: true },
-        { useReplica: true },
+      return await this.workspaceOrmManager.executeInWorkspaceContext(
+        async () => {
+          const repository = this.workspaceOrmManager.getRepository(
+            objectName,
+            { shouldBypassPermissionChecks: true },
+            { useReplica: true },
+          );
+          const record = (await repository.findOne({
+            where: { id: recordId },
+          })) as Record<string, unknown> | null;
+
+          if (!isDefined(record)) {
+            return { isReadable: false, value: null };
+          }
+
+          const value = record[fieldName];
+
+          return {
+            isReadable: true,
+            value: isDefined(value) ? String(value) : null,
+          };
+        },
+        authContext,
       );
-      const record = (await repository.findOne({
-        where: { id: recordId },
-      })) as Record<string, unknown> | null;
-
-      if (!isDefined(record)) {
-        return { isReadable: false, value: null };
-      }
-
-      const value = record[fieldName];
-
-      return {
-        isReadable: true,
-        value: isDefined(value) ? String(value) : null,
-      };
     } catch (error) {
       this.logger.warn(
         `record-rules: не удалось прочитать ${objectName}.${fieldName} записи ${recordId}: ${
