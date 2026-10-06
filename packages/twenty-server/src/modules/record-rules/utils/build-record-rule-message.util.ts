@@ -8,14 +8,21 @@
 export const DEFAULT_RECORD_RULE_MESSAGE =
   'Стадию «{название}» может поставить только менеджер';
 
+export const DEFAULT_RECORD_RULE_FREEZE_MESSAGE =
+  'Запись в стадии «{название}» закрыта для правки';
+
+export const DEFAULT_RECORD_RULE_BULK_FREEZE_MESSAGE =
+  'Массовая правка записей в закрытой стадии запрещена';
+
 export const buildRecordRuleMessage = (
   template: string,
   valueLabel: string,
+  defaultTemplate: string = DEFAULT_RECORD_RULE_MESSAGE,
 ): string => {
   const normalizedTemplate = template.trim();
 
   return (normalizedTemplate.length > 0
     ? normalizedTemplate
-    : DEFAULT_RECORD_RULE_MESSAGE
+    : defaultTemplate
   ).replaceAll('{название}', valueLabel);
 };

@@ -75,6 +75,10 @@ const normalizeRule = (raw: unknown): RecordRule | null => {
       candidate.applyToServiceChanges,
       false,
     ),
+    freezeEnabled: asBooleanOrDefault(candidate.freezeEnabled, false),
+    freezeValues: asAllowedValues(candidate.freezeValues),
+    freezeAllowedFields: asAllowedValues(candidate.freezeAllowedFields),
+    freezeMessage: asTrimmedString(candidate.freezeMessage),
   };
 };
 

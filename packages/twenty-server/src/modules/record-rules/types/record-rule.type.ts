@@ -22,6 +22,16 @@ export type RecordRule = {
   message: string;
   active: boolean;
   applyToServiceChanges: boolean;
+
+  /**
+   * Заморозка записи (Задача 3): пока запись в закрытой стадии, адресованному
+   * пользователю запрещены любые правки записи, кроме `freezeAllowedFields`.
+   * Пустой `freezeValues` означает «закрыто всё, чего нет в `allowedValues`».
+   */
+  freezeEnabled: boolean;
+  freezeValues: string[];
+  freezeAllowedFields: string[];
+  freezeMessage: string;
 };
 
 export type RecordRulesConfig = {

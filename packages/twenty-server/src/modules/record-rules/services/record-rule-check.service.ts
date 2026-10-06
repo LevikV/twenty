@@ -12,7 +12,11 @@ import { WorkspaceOrmManager } from 'src/engine/twenty-orm/workspace-orm.manager
 import { InjectWorkspaceScopedRepository } from 'src/engine/twenty-orm/workspace-scoped-repository/inject-workspace-scoped-repository.decorator';
 import { WorkspaceScopedRepository } from 'src/engine/twenty-orm/workspace-scoped-repository/workspace-scoped-repository';
 import { type RecordRule } from 'src/modules/record-rules/types/record-rule.type';
-import { buildRecordRuleMessage } from 'src/modules/record-rules/utils/build-record-rule-message.util';
+import {
+  buildRecordRuleMessage,
+  DEFAULT_RECORD_RULE_BULK_FREEZE_MESSAGE,
+  DEFAULT_RECORD_RULE_FREEZE_MESSAGE,
+} from 'src/modules/record-rules/utils/build-record-rule-message.util';
 
 /**
  * Кто действует: роли пользователя, признак администратора и связанный
@@ -145,7 +149,14 @@ export class RecordRuleCheckService {
       }
     }
 
-    return null;
+    return await this.findFreezeViolation({
+      context,
+      authContext,
+      rules,
+      objectName,
+      recordId,
+      data,
+    });
   }
 
   /**
@@ -236,6 +247,15 @@ export class RecordRuleCheckService {
         continue;
       }
 
+      const freezeViolation = this.findBulkFreezeViolation({
+        rule,
+        data,
+      });
+
+      if (isDefined(freezeViolation)) {
+        return freezeViolation;
+      }
+
       const rawValue = data[rule.fieldName];
 
       if (!isDefined(rawValue)) {
@@ -308,6 +328,159 @@ export class RecordRuleCheckService {
       rule,
       attemptedValue,
       message: buildRecordRuleMessage(rule.message, valueLabel),
+    };
+  }
+
+  /**
+   * Заморозка записи (Задача 3). Пока запись в «закрытой» стадии, адресованному
+   * пользователю запрещены любые правки записи, кроме полей-исключений правила.
+   *
+   * Решение 06.10.2026: пустой `freezeValues` = закрыто всё, чего нет в
+   * `allowedValues`. Массовая правка — отдельный путь (`findBulkFreezeViolation`).
+   */
+  private async findFreezeViolation({
+    context,
+    authContext,
+    rules,
+    objectName,
+    recordId,
+    data,
+  }: {
+    context: CheckContext;
+    authContext: UserWorkspaceAuthContext;
+    rules: RecordRule[];
+    objectName: string;
+    recordId: string;
+    data: Record<string, unknown>;
+  }): Promise<RecordRuleViolation | null> {
+    for (const rule of rules) {
+      if (!this.isFreezeRuleForUser(rule, context.actingUser)) {
+        continue;
+      }
+
+      if (this.collectBlockedFields(rule, data).length === 0) {
+        continue;
+      }
+
+      const current = await this.readFieldValue({
+        authContext,
+        objectName,
+        recordId,
+        fieldName: rule.fieldName,
+      });
+
+      // Не смогли прочитать — не блокируем (fail-safe, ошибка уже в логе).
+      if (!current.isReadable) {
+        continue;
+      }
+
+      if (!this.isRecordClosed(rule, current.value)) {
+        continue;
+      }
+
+      return await this.buildFreezeViolation({
+        workspaceId: context.workspaceId,
+        objectName,
+        rule,
+        currentValue: current.value,
+      });
+    }
+
+    return null;
+  }
+
+  /**
+   * Массовая правка: если правило с заморозкой адресовано этому пользователю,
+   * правка любых полей, кроме исключений, запрещена целиком — стадии отдельных
+   * записей не разбираем (решение 06.10.2026, как и для защищённого поля).
+   */
+  private findBulkFreezeViolation({
+    rule,
+    data,
+  }: {
+    rule: RecordRule;
+    data: Record<string, unknown>;
+  }): RecordRuleViolation | null {
+    if (!rule.freezeEnabled || rule.action === 'CREATE') {
+      return null;
+    }
+
+    if (this.collectBlockedFields(rule, data).length === 0) {
+      return null;
+    }
+
+    const valueLabel = BULK_VALUE_LABEL;
+
+    return {
+      rule,
+      attemptedValue: valueLabel,
+      message: buildRecordRuleMessage(
+        rule.freezeMessage,
+        valueLabel,
+        DEFAULT_RECORD_RULE_BULK_FREEZE_MESSAGE,
+      ),
+    };
+  }
+
+  /** Правило с включённой заморозкой адресовано этому пользователю? */
+  private isFreezeRuleForUser(rule: RecordRule, actingUser: ActingUser): boolean {
+    if (!rule.freezeEnabled || rule.action === 'CREATE') {
+      return false;
+    }
+
+    return this.ruleTargetsUser(rule, actingUser);
+  }
+
+  /** Изменяемые поля, которые заморозка не разрешает (вне списка исключений). */
+  private collectBlockedFields(
+    rule: RecordRule,
+    data: Record<string, unknown>,
+  ): string[] {
+    return Object.entries(data)
+      .filter(([, value]) => isDefined(value))
+      .map(([fieldName]) => fieldName)
+      .filter((fieldName) => !rule.freezeAllowedFields.includes(fieldName));
+  }
+
+  /** Запись в закрытой стадии? Пустой `freezeValues` = вне разрешённого набора. */
+  private isRecordClosed(rule: RecordRule, currentValue: string | null): boolean {
+    if (rule.freezeValues.length > 0) {
+      return isDefined(currentValue) && rule.freezeValues.includes(currentValue);
+    }
+
+    return currentValue === null || !rule.allowedValues.includes(currentValue);
+  }
+
+  /** Готовый отказ по заморозке: текст правила, `{название}` — текущая стадия. */
+  private async buildFreezeViolation({
+    workspaceId,
+    objectName,
+    rule,
+    currentValue,
+  }: {
+    workspaceId: string;
+    objectName: string;
+    rule: RecordRule;
+    currentValue: string | null;
+  }): Promise<RecordRuleViolation> {
+    const valueLabel =
+      isDefined(currentValue) && currentValue.length > 0
+        ? await this.resolveValueLabel({
+            workspaceId,
+            objectName,
+            fieldName: rule.fieldName,
+            value: currentValue,
+          })
+        : 'без стадии';
+
+    return {
+      rule,
+      attemptedValue: currentValue ?? '',
+      message: buildRecordRuleMessage(
+        rule.freezeMessage,
+        valueLabel,
+        DEFAULT_RECORD_RULE_FREEZE_MESSAGE,
+      ),
     };
   }
 
